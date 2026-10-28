@@ -4,9 +4,14 @@
   "main": "naukri-profile-refresh.js",
   "scripts": {
     "refresh": "node naukri-profile-refresh.js",
-    "login": "node naukri-profile-refresh.js login"
+    "login": "node naukri-profile-refresh.js login",
+    "test": "node --test naukri-helpers.test.js external-apply.test.js"
   },
-  "keywords": ["naukri", "playwright", "automation"],
+  "keywords": [
+    "naukri",
+    "playwright",
+    "automation"
+  ],
   "author": "Ankit Baghel",
   "license": "ISC",
   "description": "Keeps your Naukri profile recently-updated by toggling the resume headline on a schedule",

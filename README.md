@@ -45,6 +45,7 @@ For scheduling on Windows, see the Task Scheduler sections below.
 | Command | What it does |
 |---|---|
 | `./setup-schedule-mac.sh` | Register the refresh job: checks every 15 min, refreshes only while you're away |
+| `./setup-schedule-mac.sh --naukri` | Refresh plus **live** Naukri auto-apply: hourly, 09:00–23:00, only while you're away |
 | `./setup-schedule-mac.sh --all` | Also register the **live** Naukri and Wellfound auto-apply jobs |
 | `./setup-schedule-mac.sh --status` | Show which jobs are registered and their last exit code |
 | `launchctl kickstart gui/$(id -u)/com.naukri-update.profile-refresh` | Trigger the scheduled job now (still applies the away check) |
@@ -65,16 +66,100 @@ For scheduling on Windows, see the Task Scheduler sections below.
 
 | Command | What it does |
 |---|---|
-| `node auto-apply-runner.js naukri login` | One-time sign-in (also `wellfound`, `indeed`) |
-| `node auto-apply-runner.js naukri` | Dry run: fills everything, never submits |
-| `node auto-apply-runner.js naukri --live` | Applies for real |
+| `cp -R .naukri-chrome-profile .naukri-apply-profile && rm -f .naukri-apply-profile/Singleton*` | Give auto-apply a logged-in Naukri session by copying the refresh's. Use this instead of `naukri login`, which Google often blocks. Repeat if apply runs show as logged out (`rm -rf .naukri-apply-profile` first) |
+| `node auto-apply-runner.js naukri --plan` | Show the searches and numbers a run would use, then exit. Opens no browser |
+| `node auto-apply-runner.js naukri --show` | Dry run with the window visible: fills everything, never submits |
+| `node auto-apply-runner.js naukri --live --show` | Apply for real and watch it |
+| `node auto-apply-runner.js naukri --live --max 5` | Apply for real, at most 5 this run |
+| `node auto-apply-runner.js naukri --live --max 30 --daily 40` | Raise today's cap for this run too (the per-run number never exceeds what's left of the day) |
+| `rm apply-state-naukri.json` | Reset today's application count |
+| `open applications.csv` | Everything submitted, plus every "Apply on company site" job and its link |
 
-**Settings in `.env`:** `AWAY_IDLE_MINUTES` sets how many idle minutes count as "away"
-(default 10).
+**Settings in `.env`:**
+
+| Setting | Default | What it does |
+|---|---|---|
+| `NAUKRI_ROLES` | java backend developer, java full stack developer, full stack developer, node js developer, backend developer, java developer, spring boot developer, software engineer | Searches run, in this order |
+| `NAUKRI_LOCATION` | `bangalore` | City filter for every search. Leave blank for anywhere |
+| `NAUKRI_EXPERIENCE` | `3` | Years of experience the searches filter by |
+| `NAUKRI_PER_RUN` | `10` | Applications per run (`--max` overrides it) |
+| `NAUKRI_DAILY_CAP` | `20` | Applications per day across all runs (`--daily` overrides it) |
+| `NAUKRI_PER_SEARCH` | `2` | Applications from one search before moving to the next, so a run covers every role. `0` stays on a search until it runs out of jobs |
+| `AWAY_IDLE_MINUTES` | `10` | Idle minutes that count as "away" for scheduled runs |
+| `REMOTE_ANSWER` / `RELOCATE_ANSWER` | open to both | Text answers to remote-work and relocation questions |
+| `RELOCATE_OK` | `yes` | `no` picks the "No" option on Yes/No relocation questions about other cities (Bengaluru ones still get Yes) |
+
+**`applications.csv`** gets a row for each job a live run handles, with the date and
+time:
+
+- **Naukri one-click applies:** Verified is `verified`, `missing` or `unknown`, checked
+  against your Naukri applied list.
+- **"Apply on company site" jobs:** Job Link is the Naukri listing and Company Site Link
+  is the employer page it led to. Verified says what happened: `external: applied`,
+  `external: skipped — needs an account … — apply manually`, or `external: not attempted
+  (run ended) — apply manually`. Filter on "apply manually" for the jobs to apply to by
+  hand.
+- **My Status** is left blank for you to fill in, for example "applied" or "not
+  interested".
+
+Each Naukri listing is written only once, even if it turns up again in a later search
+or on a later day. Stopping a live run with Ctrl+C still saves the external jobs it had
+found but not reached yet. Dry runs write nothing to the CSV.
+
+**Working through the CSV by hand:** open it in Excel, filter Verified for "apply
+manually", apply, and set My Status. Save it as **CSV UTF-8**, and only while no apply
+run is going (no second Chrome icon in the Dock). A run appends rows to the file, and
+Excel saving over it at the same moment would lose those rows.
 
 **Testing the away check:** run `sleep 20; node naukri-profile-refresh.js --when-away`
 and lock the screen straight away with **Ctrl + Cmd + Q**. After you unlock, the output
 should show `Running while away (screen locked)` followed by an `OK:` line.
+
+## How the automation works
+
+**What runs on its own (launchd).** After `./setup-schedule-mac.sh`, only the
+**profile refresh** runs automatically. `--all` also schedules live Naukri and
+Wellfound auto-apply (`--naukri` for Naukri only). Every scheduled run first checks whether you're away (screen
+locked or idle `AWAY_IDLE_MINUTES`) and exits quietly if you aren't.
+
+| Job | How often | What one run does |
+|---|---|---|
+| Profile refresh | Checks every 15 min, refreshes at most hourly | Opens your Naukri profile and cycles a trailing dot on the resume headline (".", "..", none), which counts as a profile update. Reloads to confirm the save, and re-uploads the resume if its "Uploaded on" date isn't today. About 1–2 minutes |
+| Naukri auto-apply (`--all`) | Hourly, 09:00–23:00 only, after a random 0–14 min delay | Applies to up to `NAUKRI_PER_RUN` jobs, stopping at `NAUKRI_DAILY_CAP` for the day. Up to 100 minutes |
+| Wellfound auto-apply (`--all`) | Same | Same, for Wellfound (up to 50/day) |
+
+**Inside one Naukri apply run** (`auto-apply-runner.js` + `naukri-auto-apply.js`):
+
+1. Opens Chrome with `.naukri-apply-profile` and loads the first search URL, built from
+   `NAUKRI_ROLES` + `NAUKRI_LOCATION` + `NAUKRI_EXPERIENCE` (check with `--plan`).
+2. Goes through the job cards. It skips titles that don't match the keyword list in
+   `naukri-auto-apply.js`, titles on the blocklist (lead, manager, QA, DevOps, frontend,
+   .NET, …), and jobs you've already applied to.
+3. **One-click "Apply" jobs:** clicks Apply. If Naukri's chatbot asks screening
+   questions, it answers from your `.env` (notice period, CTC, years, location) and from
+   resume-based answers about your skills. Questions it has no answer for go to Gemini
+   (if `GEMINI_KEY` is set) or get a short generic answer. Afterwards it checks that the
+   job appears in your Naukri applied list.
+4. **"Apply on company site" jobs** (most Naukri listings): Node follows the link to the
+   employer's site (`external-apply.js`). On a plain form, such as Greenhouse or Lever,
+   it fills in your details, attaches the resume and submits. If the site needs an
+   account (Workday and others) or there's no form, it skips the job. Either way, the
+   link goes in `applications.csv`.
+5. Waits 45–120 seconds between applications. After `NAUKRI_PER_SEARCH` applications it
+   moves to the next search. A search with no jobs left is dropped. The run ends when it
+   reaches its target, the daily cap, 100 minutes, or runs out of jobs. The next run
+   starts at the search where this one stopped, so every role gets its turn over the day.
+   `--plan` marks that search with `→`.
+6. If the browser gets stuck (no progress for 3 cycles), it closes and reopens Chrome,
+   up to 8 times per run.
+
+**Dry run vs live.** Without `--live`, everything happens except the final click: no
+application is sent, nothing is counted against the daily cap, and nothing is written
+to the CSV.
+
+**Files a run reads and writes:** `.env` (your details and settings), `Resume/…pdf`
+(attached to applications), `apply-state-naukri.json` (today's count),
+`applications.csv` (results). Error screenshots are saved as `blocked-step-naukri.png`.
 
 **Git remotes:** `origin` is your fork and `upstream` is the original repo. To pull in
 upstream changes, run `git fetch upstream && git merge upstream/main`.
@@ -180,6 +265,7 @@ agent, which runs at login and every hour after that:
 
 ```bash
 ./setup-schedule-mac.sh            # hourly profile refresh
+./setup-schedule-mac.sh --naukri   # also the LIVE Naukri auto-apply job
 ./setup-schedule-mac.sh --all      # also the LIVE Naukri + Wellfound auto-apply jobs
 ./setup-schedule-mac.sh --status   # check
 launchctl kickstart gui/$(id -u)/com.naukri-update.profile-refresh   # run now
@@ -386,3 +472,8 @@ Auto-applying may violate Wellfound's Terms of Service and can get an
 account rate-limited or banned. The delays are deliberately human-like and everything
 runs on your own machine with your own account — use at your own risk, and review
 the dry run before going live.
+
+
+## If something goes wrong:
+- "Looks logged-out": copy the profile again. Run rm -rf .naukri-apply-profile && cp -R .naukri-chrome-profile .naukri-apply-profile && rm -f .naukri-apply-profile/Singleton*.
+- A stuck form: the run saves a blocked-step-naukri.png screenshot. Send me the terminal output and I'll look.

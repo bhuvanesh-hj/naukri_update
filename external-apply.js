@@ -213,6 +213,7 @@ async function applyExternal(ctx, job, { CV, live, resumePath, log = () => {} })
     target = popup || page;
     await target.waitForLoadState('domcontentloaded', { timeout: 60000 }).catch(() => {});
     await target.waitForTimeout(5000); // ATS pages are SPA-heavy
+    job.companyUrl = target.url(); // the employer's own page, recorded in applications.csv
 
     const kind = atsKind(target.url());
     if (kind === 'account') return { status: 'skipped', detail: `needs an account: ${new URL(target.url()).hostname}` };

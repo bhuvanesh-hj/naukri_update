@@ -50,11 +50,17 @@ const CV = {
   // links
   github: g('GITHUB_URL'),
   linkedin: g('LINKEDIN_URL'),
-  portfolio: g('PORTFOLIO_URL'),
-  links: `GitHub: ${g('GITHUB_URL')} | LinkedIn: ${g('LINKEDIN_URL')} | Portfolio: ${g('PORTFOLIO_URL')}`,
-  // derived sentences
-  remoteOk: 'Yes, I am fully set up for remote work and also open to hybrid/onsite.',
-  relocate: `Yes, I am open to relocation. I am currently based in ${g('LOCATION')}.`,
+  // No portfolio site → point portfolio/website questions at GitHub instead of a blank.
+  portfolio: g('PORTFOLIO_URL') || g('GITHUB_URL'),
+  links: [['GitHub', g('GITHUB_URL')], ['LinkedIn', g('LINKEDIN_URL')], ['Portfolio', g('PORTFOLIO_URL')]]
+    .filter(([, url]) => url)
+    .map(([label, url]) => `${label}: ${url}`)
+    .join(' | '),
+  // derived sentences (override in .env with REMOTE_ANSWER / RELOCATE_ANSWER)
+  remoteOk: g('REMOTE_ANSWER', 'Yes, I am fully set up for remote work and also open to hybrid/onsite.'),
+  relocate: g('RELOCATE_ANSWER', `Yes, I am open to relocation. I am currently based in ${g('LOCATION')}.`),
+  // RELOCATE_OK=no: Yes/No relocation questions get the "No" option (text ones get RELOCATE_ANSWER)
+  relocateOk: !/^(no|false|0)$/i.test(g('RELOCATE_OK', 'yes').trim()),
   startDate: `I can start within ${g('NOTICE_PERIOD')}.`,
 };
 
@@ -68,4 +74,15 @@ const resumePath = path.resolve(__dirname, g('RESUME_FILE', 'Ankit Baghel.pdf'))
 // --when-away: minutes without keyboard/mouse input before a scheduled run proceeds
 const awayIdleMinutes = Number(g('AWAY_IDLE_MINUTES')) || 10;
 
-module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, resumePath, awayIdleMinutes };
+// Naukri job search, built into search URLs by auto-apply-runner.js:
+//   NAUKRI_ROLES       comma-separated role searches, in priority order
+//   NAUKRI_LOCATION    city filter (blank = anywhere)
+//   NAUKRI_EXPERIENCE  years of experience Naukri filters roles by
+const naukriSearch = {
+  roles: g('NAUKRI_ROLES', 'java backend developer, java full stack developer, full stack developer, node js developer, backend developer, java developer, spring boot developer, software engineer')
+    .split(',').map((s) => s.trim()).filter(Boolean),
+  location: g('NAUKRI_LOCATION', 'bangalore').trim(),
+  experience: g('NAUKRI_EXPERIENCE', '3').trim(),
+};
+
+module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, resumePath, awayIdleMinutes, naukriSearch, setting: g };

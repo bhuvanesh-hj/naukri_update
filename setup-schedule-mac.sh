@@ -3,7 +3,8 @@
 # setup-schedule.ps1).
 #
 #   Register:  ./setup-schedule-mac.sh            profile refresh only
-#              ./setup-schedule-mac.sh --all      also the two LIVE auto-apply jobs
+#              ./setup-schedule-mac.sh --naukri   refresh + LIVE Naukri auto-apply
+#              ./setup-schedule-mac.sh --all      refresh + LIVE Naukri and Wellfound auto-apply
 #   Status:    ./setup-schedule-mac.sh --status
 #   Remove:    ./setup-schedule-mac.sh --remove
 #
@@ -30,20 +31,20 @@ domain="gui/$(id -u)"
 # macOS. The refresh checks every 15 minutes so it catches short breaks, and itself
 # refreshes at most once an hour.
 refresh_def="com.naukri-update.profile-refresh|900|naukri-profile-refresh.js --when-away"
-apply_defs=(
-  "com.naukri-update.naukri-apply|3600|auto-apply-runner.js naukri --live --scheduled --when-away"
-  "com.naukri-update.wellfound-apply|3600|auto-apply-runner.js wellfound --live --scheduled --when-away"
-)
+naukri_def="com.naukri-update.naukri-apply|3600|auto-apply-runner.js naukri --live --scheduled --when-away"
+wellfound_def="com.naukri-update.wellfound-apply|3600|auto-apply-runner.js wellfound --live --scheduled --when-away"
+apply_defs=("$naukri_def" "$wellfound_def")
 all_defs=("$refresh_def" "${apply_defs[@]}")
 
 mode="register"
 defs=("$refresh_def")
 case "${1:-}" in
   --all)    defs=("${all_defs[@]}") ;;
+  --naukri) defs=("$refresh_def" "$naukri_def") ;;
   --status) mode="status" ;;
   --remove) mode="remove" ;;
   "")       ;;
-  *) echo "Unknown option: $1 (use --all, --status or --remove)"; exit 1 ;;
+  *) echo "Unknown option: $1 (use --naukri, --all, --status or --remove)"; exit 1 ;;
 esac
 
 if [ "$mode" = "status" ]; then

@@ -40,6 +40,7 @@
     DRY_RUN: true,             // true = open jobs + locate Apply but never click it. Flip to false when ready.
     MAX_APPLICATIONS: 15,      // stop after this many applications this run (tracked across pastes)
     EXTERNAL_BATCH: 4,         // queue this many "apply on company site" jobs, then yield to the runner
+    YIELD_AFTER: 0,            // runner sets this: stop after N applications on this search so it can rotate (0 = no limit)
     // Wait between applications, randomised between min/max. Raised from 8-20s: an
     // hourly run only needs ~10 applications, so there is a whole hour to spread them
     // over, and a steady application every 10s is a far stronger automation signal
@@ -49,21 +50,22 @@
     geminiKey: __CFG.geminiKey || '',   // optional: Gemini API key for unmatched chatbot questions
 
     // Job titles to apply to (case-insensitive substring match on the job title)
+    // Backend-first, matching the resume: Java (Spring Boot, Vert.x, J2EE), Node.js
+    // (NestJS, Express) and Python (FastAPI). Full stack stays in, since there is MERN
+    // experience; frontend-only, mobile and AI/ML roles are left out.
     TITLE_KEYWORDS: [
-      'full stack', 'fullstack', 'full-stack', 'mern', 'backend', 'back end',
-      'frontend', 'front end', 'software engineer', 'software developer',
-      'web developer', 'ai engineer', 'ai developer', 'ai specialist',
-      'ml engineer', 'artificial intelligence', 'machine learning',
-      'generative ai', 'gen ai', 'genai', 'llm', 'agentic',
-      'react', 'node', 'javascript', 'js developer', 'js engineer',
-      'typescript', 'python', 'mobile',
-      'react native', 'sde', 'member of technical staff',
+      'backend', 'back end', 'back-end', 'java', 'spring', 'j2ee',
+      'node', 'nestjs', 'python', 'fastapi', 'microservice', 'api developer',
+      'software engineer', 'software developer', 'sde', 'member of technical staff',
+      'full stack', 'fullstack', 'full-stack', 'mern',
     ],
     // Skip jobs whose title contains any of these
     TITLE_BLOCKLIST: [
       'senior staff', 'principal', 'director', 'manager', 'lead', 'devops',
       'data engineer', 'qa', 'test', 'intern', 'designer', 'sales', 'marketing',
       '.net', 'c#', 'php', 'ruby', 'golang', 'ios', 'android native', 'flutter',
+      'frontend', 'front end', 'front-end', 'ui developer', 'react native',
+      'ml engineer', 'machine learning', 'data scientist',
     ],
   };
 
@@ -97,12 +99,23 @@
       `I ship production features end to end. ${CV.highlights[0] || ''}. This role matches my stack directly, and I want to keep building products with real ownership.`],
     [/tell (us|me) about yourself|introduce yourself|about you|summary/i,
       `I'm ${CV.name}, ${CV.currentRole}. ${CV.highlights[0] || ''}. Previously: ${CV.highlights[2] || ''}. ${CV.highlights[3] || ''}.`],
-    [/react|frontend|front-end/i,
-      `Strong frontend experience: React.js, Next.js, Redux, TypeScript and Tailwind CSS, plus React Native.`],
-    [/node|backend|back-end|api/i,
-      `I build production backends daily: Node.js/Express and Python/FastAPI, REST + GraphQL, WebSockets, MongoDB/PostgreSQL/Redis, on cloud with Docker and CI/CD.`],
-    [/\b(ai|llm|ml|machine learning|genai|langchain)\b/i,
-      `AI is a core focus: production GenAI agents, RAG pipelines, tool calling, MCP and multi-agent systems.`],
+    // Skill answers, taken from the resume. Only claim what is on it: a question about
+    // anything else (AWS, Kubernetes, AI/ML, ...) falls through to Gemini or the
+    // generic answer rather than getting a made-up "yes". Most specific first.
+    [/\bjava\b|spring|j2ee|vert\.?x/i,
+      `Java is my primary language: 2 years building production microservices with Spring Boot, Vert.x and J2EE at Gooru Learning, backed by PostgreSQL/MySQL, Redis and Kafka.`],
+    [/kafka|microservice|event[- ]driven|distributed|message queue/i,
+      `I build event-driven microservices: Apache Kafka for asynchronous processing between services, and I have decomposed monolithic backend functionality into independently deployable microservices.`],
+    [/sql|postgres|mysql|mongo|redis|database|query optimi[sz]|caching/i,
+      `I design PostgreSQL and MySQL schemas and tune complex queries for high-throughput workloads, and have added Redis and MongoDB caching layers to cut read latency on hot paths.`],
+    [/python|fastapi/i,
+      `I have delivered production services in Python with FastAPI. My primary backend stack is Java (Spring Boot), with Node.js and Python used where the workload fits.`],
+    [/docker|ci ?\/ ?cd|container/i,
+      `I containerize services with Docker and ship them through CI/CD pipelines.`],
+    [/node|\bnest(js)?\b|\bexpress(\.?js)?\b|backend|back-end|\bapis?\b|\brest(ful)?\b/i,
+      `Backend is my core: 3 years building REST and event-driven microservices in Java (Spring Boot, Vert.x, J2EE), Node.js (NestJS, Express.js) and Python (FastAPI), shipped with Docker and CI/CD.`],
+    [/react|next\.?js|redux|frontend|front-end/i,
+      `Frontend is secondary for me: React.js, Next.js (SSR) and Redux, from a frontend role at Appscrip and MERN-stack work at Sharpener. My main focus is backend.`],
     [/education|degree|university|college|qualification/i, CV.education],
     [/phone|contact number|mobile/i, CV.phone],
     [/^name$|your name|full name|candidate name|first name/i, CV.name],
@@ -233,7 +246,13 @@
       const options = [...drawer.querySelectorAll(SELECTORS.chatOption)].filter(visible)
         .filter((o) => o.textContent.trim().length > 0 && o.textContent.trim().length < 60);
       if (options.length) {
-        const pick = options.find((o) => YES.test(o.textContent)) || options[0];
+        // Not relocating: a question about moving elsewhere gets the No-style option.
+        // One about Bengaluru itself (where CV.location is) still gets the YES pick.
+        const movingAway = CV.relocateOk === false && /reloc|move to|shift to/i.test(question) &&
+          !/bengaluru|bangalore/i.test(question);
+        const NO = /^no\b|not willing|not open|bengaluru|bangalore/i;
+        const pick = (movingAway ? options.find((o) => NO.test(o.textContent.trim())) : null) ||
+          options.find((o) => !movingAway && YES.test(o.textContent)) || options[0];
         pick.click();
         log(`  ☑ picked option: "${pick.textContent.trim().slice(0, 50)}"`);
       } else {
@@ -393,6 +412,7 @@
   }
 
   let extQueued = 0;
+  let doneHere = 0; // applications (or dry-run "would apply"s) in this injection
   while (state.applied < CONFIG.MAX_APPLICATIONS) {
     const cards = [...document.querySelectorAll(SELECTORS.jobCards)].filter(visible);
     let job = null;
@@ -438,6 +458,10 @@
       saveState();
       log(`  progress: ${state.applied}/${CONFIG.MAX_APPLICATIONS}`);
     }
+    if (ok === true && CONFIG.YIELD_AFTER > 0 && ++doneHere >= CONFIG.YIELD_AFTER) {
+      log(`↩ ${doneHere} applied on this search — yielding so the runner can move to the next one.`);
+      break;
+    }
     if (ok === 'external') {
       extQueued++;
       // The runner applies on the employer's own site, but it can only do that while
@@ -451,7 +475,11 @@
         break;
       }
     }
-    await humanDelay();
+    // The long human-pace gap is only for real applications. A skipped job (no Apply
+    // button, already applied, handed off as external) or a dry run sent nothing, and
+    // waiting 45-120s after each of those made a run spend most of its time idle.
+    if (ok === true && !CONFIG.DRY_RUN) await humanDelay();
+    else await sleep(4000 + Math.random() * 6000);
   }
 
   popup.close();

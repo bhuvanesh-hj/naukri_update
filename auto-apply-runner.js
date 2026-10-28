@@ -14,7 +14,7 @@
  */
 const path = require('path');
 const fs = require('fs');
-const { CV, geminiKey, resumePath: RESUME_PATH, awayIdleMinutes: AWAY_IDLE_MINUTES } = require('./config'); // personal data from .env
+const { CV, geminiKey, resumePath: RESUME_PATH, awayIdleMinutes: AWAY_IDLE_MINUTES, naukriSearch, setting } = require('./config'); // personal data from .env
 const { minimizeBrowserWindows, hideBrowserWindows, userAway, SHOW_FLAG } = require('./window-utils');
 const { applyExternal } = require('./external-apply'); // "Apply on company site" jobs, driven from Node
 // stealth patches the fingerprint leaks reCAPTCHA uses to flag automation; falls back to plain playwright
@@ -35,6 +35,18 @@ process.on('uncaughtException', (e) => console.log(`[${new Date().toLocaleString
 const SITE_ARG = process.argv[2];
 const LOGIN_MODE = process.argv.includes('login');
 const LIVE = process.argv.includes('--live');
+// --max N / --max=N: applications this run; --daily N: today's cap. Both override .env
+// (<SITE>_PER_RUN / <SITE>_DAILY_CAP, e.g. NAUKRI_PER_RUN=5) and the defaults below.
+const numArg = (name) => {
+  const i = process.argv.findIndex((a) => a === name || a.startsWith(name + '='));
+  if (i < 0) return undefined;
+  const v = process.argv[i].includes('=') ? process.argv[i].split('=')[1] : process.argv[i + 1];
+  const n = parseInt(v, 10);
+  if (!(n > 0)) { console.log(`${name} needs a positive number, got "${v}"`); process.exit(1); }
+  return n;
+};
+const MAX_ARG = numArg('--max');
+const DAILY_ARG = numArg('--daily');
 // --scheduled marks a run started by Task Scheduler rather than by hand. Such runs
 // wait a random 0-14 minutes before starting and refuse to run outside daytime hours,
 // because a burst of applications at exactly HH:00:00, around the clock, is the most
@@ -104,14 +116,18 @@ const SITES = {
     // ponytail: own profile (copy of the refresh's login) so the long apply run never
     // collides with the hourly refresh on .naukri-chrome-profile. Re-copy if it logs out.
     profile: '.naukri-apply-profile',
-    searches: [
-      'https://www.naukri.com/full-stack-developer-jobs?experience=1',
-      'https://www.naukri.com/software-developer-jobs?experience=1',
-      'https://www.naukri.com/backend-developer-jobs?experience=1',
-      'https://www.naukri.com/mern-stack-developer-jobs?experience=1',
-      'https://www.naukri.com/react-js-developer-jobs?experience=1',
-      'https://www.naukri.com/node-js-developer-jobs?experience=1',
-    ],
+    // Built from NAUKRI_ROLES / NAUKRI_LOCATION / NAUKRI_EXPERIENCE in .env, e.g.
+    // "java backend developer" + bangalore + 3 →
+    //   https://www.naukri.com/java-backend-developer-jobs-in-bangalore?k=java%20backend%20developer&l=bangalore&experience=3
+    searches: naukriSearch.roles.map((role) => {
+      const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const loc = naukriSearch.location;
+      const q = new URLSearchParams({ k: role.toLowerCase(), ...(loc ? { l: loc.toLowerCase() } : {}), experience: naukriSearch.experience });
+      return `https://www.naukri.com/${slug(role)}-jobs${loc ? '-in-' + slug(loc) : ''}?${q.toString().replace(/\+/g, '%20')}`;
+    }),
+    // Move on to the next search after this many applications from one, so a run is
+    // spread across all the roles instead of spending itself on the first search.
+    perSearch: 2,
     loginUrl: 'https://www.naukri.com/nlogin/login',
     // inject only on search pages (…-jobs…), never into the job popup the script drives itself
     injectOn: (url) => /naukri\.com\/[^?]*-jobs/.test(url),
@@ -133,15 +149,35 @@ if (!site) {
 
 // Hard daily cap per site, tracked across runs in a state file — multiple logons in
 // one day resume the count instead of restarting it, and stop dead at the cap.
-const DAILY_CAP = site.dailyCap || 50;
+const SITE_KEY = String(SITE_ARG).toUpperCase();
+const DAILY_CAP = DAILY_ARG || parseInt(setting(`${SITE_KEY}_DAILY_CAP`), 10) || site.dailyCap || 50;
+const PER_RUN = MAX_ARG || parseInt(setting(`${SITE_KEY}_PER_RUN`), 10) || site.perRun || DAILY_CAP;
+const PER_SEARCH = parseInt(setting(`${SITE_KEY}_PER_SEARCH`), 10) || site.perSearch || 0; // 0 = stay until exhausted
 const STATE_FILE = path.join(__dirname, `apply-state-${SITE_ARG}.json`);
 const todayKey = new Date().toDateString();
 let dayState = { date: todayKey, count: 0 };
-try { const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8').replace(/^﻿/, '')); if (s.date === todayKey) dayState = s; } catch (e) {}
-const bumpDayCount = () => { dayState.count++; try { fs.writeFileSync(STATE_FILE, JSON.stringify(dayState)); } catch (e) {} };
+try {
+  const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8').replace(/^﻿/, ''));
+  if (s.date === todayKey) dayState = s;
+  // the search to resume from carries over to the next day; only the count resets
+  else if (Number.isInteger(s.nextSearch)) dayState.nextSearch = s.nextSearch;
+} catch (e) {}
+const saveDayState = () => { try { fs.writeFileSync(STATE_FILE, JSON.stringify(dayState)); } catch (e) {} };
+const bumpDayCount = () => { dayState.count++; saveDayState(); };
 // per-run target (site.perRun) capped by whatever is left of the daily allowance
-const TARGET = Math.min(site.perRun || DAILY_CAP, DAILY_CAP - dayState.count);
+const TARGET = Math.min(PER_RUN, DAILY_CAP - dayState.count);
 const MAX_RUNTIME_MS = 100 * 60 * 1000;
+
+// --plan: print what a run would do and exit, without opening a browser.
+if (process.argv.includes('--plan')) {
+  console.log(`${SITE_ARG}: ${LIVE ? 'LIVE' : 'DRY RUN'}, up to ${TARGET} this run ` +
+    `(per run ${PER_RUN}, daily cap ${DAILY_CAP}, ${dayState.count} already today)` +
+    (PER_SEARCH ? `, ${PER_SEARCH} per search before moving on` : ''));
+  const start = (dayState.nextSearch || 0) % site.searches.length;
+  site.searches.forEach((u, i) => console.log(`  ${i === start ? '→' : ' '} ${i + 1}. ${u}`));
+  console.log(`  (→ = where the next run starts)`);
+  process.exit(0);
+}
 const MAX_RESTARTS = 8; // browser gets closed and reopened this many times before giving up
 const IDLE_ROTATE_MS = 4 * 60 * 1000;
 
@@ -160,15 +196,36 @@ function logApplication(job) {
   // no verification status) are not silently read as unverified.
   if (fs.existsSync(CSV_FILE)) {
     const header = fs.readFileSync(CSV_FILE, 'utf8').split('\n')[0];
-    if (!header.includes('Job Link') || !header.includes('Verified')) {
-      fs.renameSync(CSV_FILE, path.join(__dirname, 'applications-old.csv'));
+    if (!['Job Link', 'Verified', 'Company Site Link', 'My Status'].every((h) => header.includes(h))) {
+      // dated name, so a second migration never overwrites an earlier archive
+      fs.renameSync(CSV_FILE, path.join(__dirname, `applications-old-${Date.now()}.csv`));
     }
   }
   if (!fs.existsSync(CSV_FILE)) {
     // ﻿ BOM so Excel renders ₹/– correctly
-    fs.writeFileSync(CSV_FILE, '﻿' + csvRow(['Date', 'Site', 'Role', 'Company', 'CTC/Salary', 'Skills', 'Job Link', 'Verified', 'Job Description']));
+    // My Status is left blank for you: mark the "apply manually" rows as you work through them.
+    fs.writeFileSync(CSV_FILE, '﻿' + csvRow(['Date', 'Site', 'Role', 'Company', 'CTC/Salary', 'Skills', 'Job Link', 'Company Site Link', 'Verified', 'My Status', 'Job Description']));
   }
-  fs.appendFileSync(CSV_FILE, csvRow([new Date().toLocaleString(), SITE_ARG, job.title, job.company, job.salary, job.skills, job.link, job.verified || 'n/a', job.jd]));
+  fs.appendFileSync(CSV_FILE, csvRow([new Date().toLocaleString(), SITE_ARG, job.title, job.company, job.salary, job.skills, job.link, job.companyUrl || '', job.verified || 'n/a', '', job.jd]));
+}
+
+// One CSV row per "Apply on company site" job, whatever happened to it: Job Link is the
+// Naukri listing, Company Site Link the employer page it led to, Verified the outcome.
+// Each listing is written once: not twice in one run (the Ctrl+C flush below can race
+// the normal end), and not again on a later day when the same listing turns up in a
+// new search, so the "apply manually" list stays a list of distinct jobs.
+const externalLogged = new Set();
+function logExternal(job, status) {
+  if (!job || !job.href || externalLogged.has(job.href)) return;
+  externalLogged.add(job.href);
+  try {
+    // Match the link as a whole cell, quoted or not: Excel drops the quotes when it
+    // saves the file after you fill in My Status.
+    const esc = job.href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (fs.existsSync(CSV_FILE) && new RegExp(`(^|,)"?${esc}"?(,|\\r?$)`, 'm').test(fs.readFileSync(CSV_FILE, 'utf8'))) return;
+    logApplication({ title: job.title, company: '', salary: '', skills: matchSkills(job.title),
+      link: job.href, companyUrl: job.companyUrl, verified: status, jd: 'external (company site)' });
+  } catch (e) { log('CSV write failed: ' + e.message); }
 }
 
 // Patch the console script: our DRY_RUN flag, our per-run target, and a busy-guard
@@ -177,11 +234,15 @@ function logApplication(job) {
 // share localStorage with the /jobs feed across navigations (measured 2026-08-12 — the
 // stored list kept resetting to 1), so the script re-opened the same job every cycle.
 const seenJobs = new Set(); // /jobs/<id>-slug of every job already opened this run
-function buildInjection() {
+// yieldAfter: hand control back to the runner after this many applications, so it can
+// move on to the next search. Without it the page script applied to the whole run's
+// target on the first search and the other roles were never reached.
+function buildInjection(yieldAfter = 0) {
   const raw = fs
     .readFileSync(path.join(__dirname, site.script), 'utf8')
     .replace(/DRY_RUN: true/, `DRY_RUN: ${!LIVE}`)
-    .replace(/MAX_APPLICATIONS: \d+/, `MAX_APPLICATIONS: ${TARGET}`);
+    .replace(/MAX_APPLICATIONS: \d+/, `MAX_APPLICATIONS: ${TARGET}`)
+    .replace(/YIELD_AFTER: \d+/, `YIELD_AFTER: ${yieldAfter}`);
   // the console script reads its personal data from window.__APPLY_CONFIG (from .env),
   // so no PII lives in the injected script itself
   return `(async () => {
@@ -274,13 +335,32 @@ function buildInjection() {
     return;
   }
 
-  log(`Starting. mode=${LIVE ? 'LIVE' : 'DRY RUN'} target=${TARGET} applications, max ${MAX_RUNTIME_MS / 60000} min`);
+  log(`Starting. mode=${LIVE ? 'LIVE' : 'DRY RUN'} target=${TARGET} applications (daily cap ${DAILY_CAP}, ${dayState.count} done today), max ${MAX_RUNTIME_MS / 60000} min, ${site.searches.length} searches${PER_SEARCH ? `, ${PER_SEARCH} per search` : ''}`);
   const deadline = Date.now() + MAX_RUNTIME_MS;
   let submitted = 0;
   let lastActivity = Date.now();
   let searchIdx = 0;
+  let searchSubmitted = 0;          // applications from the current search
+  const exhausted = new Set();       // searches that ran dry this session
   let pendingJob = null; // details of the job currently being applied to, for the CSV
   const externalQueue = [];              // "Apply on company site" jobs, handled in Node
+  let currentExternal = null;            // the one being applied to right now, if any
+
+  // Stopping a live run (Ctrl+C, or launchd/the system ending it) must not lose the
+  // external jobs found but not reached yet: write them to the CSV, then exit.
+  const flushExternal = (why) => {
+    if (!LIVE) return;
+    if (currentExternal) logExternal(currentExternal, `external: interrupted (${why}) — apply manually`);
+    for (const job of externalQueue) logExternal(job, `external: not attempted (${why}) — apply manually`);
+  };
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.once(sig, () => {
+      const n = externalQueue.length + (currentExternal ? 1 : 0);
+      if (LIVE && n) log(`Stopping (${sig}) — saving ${n} unreached external job(s) to applications.csv`);
+      flushExternal('run stopped');
+      process.exit(130);
+    });
+  }
   // Tabs opened purely to read the site's applied-list. They are on the same origin as
   // the feed, so without this the supervisor would inject the apply script into them.
   const VERIFY_PAGES = new Set();
@@ -377,7 +457,8 @@ function buildInjection() {
   const inject = async (page) => {
     if (Date.now() - lastInject < 20000) return;
     lastInject = Date.now();
-    await page.evaluate(buildInjection()).catch(() => {}); // navigation mid-run is normal
+    const share = PER_SEARCH > 0 ? Math.max(1, PER_SEARCH - searchSubmitted) : 0;
+    await page.evaluate(buildInjection(share)).catch(() => {}); // navigation mid-run is normal
   };
 
   function wire(page) {
@@ -438,6 +519,7 @@ function buildInjection() {
 
       if (site.submittedRe.test(text)) {
         submitted++;
+        searchSubmitted++;
         log(`==> ${submitted}/${TARGET} this run (${dayState.count + (LIVE ? 1 : 0)}/${DAILY_CAP} today)`);
         if (LIVE) { // dry runs don't pollute the CSV or the daily count
           bumpDayCount();
@@ -497,7 +579,12 @@ function buildInjection() {
     if (seenJobs.size > before) log(`Seeded ${seenJobs.size - before} already-applied jobs from ${site.appliedListUrl}`);
   }
   const mainPage = ctx.pages()[0] || (await ctx.newPage());
-  searchIdx = 0;
+  // Resume where the last run (or the last browser session of this run) left off,
+  // instead of always starting again at the first role.
+  searchIdx = (dayState.nextSearch || 0) % site.searches.length;
+  searchSubmitted = 0;
+  if (searchIdx) log(`Resuming at search ${searchIdx + 1}/${site.searches.length}: ${site.searches[searchIdx]}`);
+  exhausted.clear();
   lastActivity = Date.now();
   let fruitless = 0;            // consecutive script cycles that applied to nothing
   let submittedAtCycle = submitted;
@@ -505,7 +592,7 @@ function buildInjection() {
   ctx.pages().forEach(wire);
   ctx.on('page', wire);
 
-  await mainPage.goto(site.searches[0], { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await mainPage.goto(site.searches[searchIdx], { waitUntil: 'domcontentloaded', timeout: 60000 });
   // not logged in? every flow needs a session — bail with a clear message
   await mainPage.waitForTimeout(8000);
   const bodyText = await mainPage.evaluate('document.body.innerText.slice(0, 3000)').catch(() => '');
@@ -517,7 +604,9 @@ function buildInjection() {
   // Supervisor: re-inject the search tab when idle, close finished form tabs,
   // rotate searches on inactivity, stop on target/time.
   while (submitted < TARGET && Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 45000));
+    // Check every 15s: at 45s a search that had finished its share sat idle up to 45s
+    // before the runner noticed and moved on.
+    await new Promise((r) => setTimeout(r, 15000));
 
     const pages = ctx.pages();
     let anyBusy = false;
@@ -541,28 +630,46 @@ function buildInjection() {
     // never drive the browser at the same time.
     while (site.externalApply && !anyBusy && externalQueue.length && submitted < TARGET && Date.now() < deadline) {
       const job = externalQueue.shift();
+      currentExternal = job;
       log(`🔗 external: ${job.title}`);
       const res = await applyExternal(ctx, job, { CV, live: LIVE, resumePath: RESUME_PATH, log });
       lastActivity = Date.now();
       log(`   ${res.status}: ${res.detail}`);
-      if (res.status === 'applied' || res.status === 'would-apply') {
+      const ok = res.status === 'applied' || res.status === 'would-apply';
+      if (ok) {
         extStats.applied++;
         submitted++;
+        searchSubmitted++;
         log(`==> ${submitted}/${TARGET} this run (${dayState.count + (LIVE ? 1 : 0)}/${DAILY_CAP} today)`);
-        if (LIVE) {
-          bumpDayCount();
-          try { logApplication({ title: job.title, company: '', salary: '', skills: matchSkills(job.title), link: job.href, jd: 'external (company site)' }); }
-          catch (e) { log('CSV write failed: ' + e.message); }
-        }
+        if (LIVE) bumpDayCount();
       } else extStats[res.status === 'skipped' ? 'skipped' : 'failed']++;
-      await new Promise((r) => setTimeout(r, 20000 + Math.random() * 25000)); // human-ish gap
+      // Every external job goes in the CSV, not just the applied ones: a skipped one
+      // (account needed, no form) still has its link there to apply by hand.
+      if (LIVE) logExternal(job, ok ? 'external: applied' : `external: ${res.status} — ${res.detail} — apply manually`);
+      currentExternal = null;
+      // human-ish gap after a real submission; a dry run or a skipped site sent nothing
+      await new Promise((r) => setTimeout(r, LIVE && ok ? 20000 + Math.random() * 25000 : 3000 + Math.random() * 4000));
     }
 
     if (!anyBusy) {
-      if (Date.now() - lastActivity > IDLE_ROTATE_MS) {
-        searchIdx++;
-        if (searchIdx >= site.searches.length) { log('All searches exhausted for today.'); break; }
-        log(`Rotating to next search: ${site.searches[searchIdx]}`);
+      const idle = Date.now() - lastActivity > IDLE_ROTATE_MS;
+      const quotaHit = PER_SEARCH > 0 && searchSubmitted >= PER_SEARCH;
+      if (idle || quotaHit) {
+        // idle = this search has nothing left; quota = it has had its share this round
+        if (idle) exhausted.add(searchIdx);
+        const n = site.searches.length;
+        let next = -1;
+        for (let k = 1; k <= n; k++) {
+          const i = (searchIdx + k) % n;
+          if (!exhausted.has(i)) { next = i; break; }
+        }
+        if (next < 0) { log('All searches exhausted for today.'); break; }
+        searchIdx = next;
+        searchSubmitted = 0;
+        dayState.nextSearch = searchIdx;
+        saveDayState();
+        lastActivity = Date.now();
+        log(`Next search (${quotaHit && !idle ? `${PER_SEARCH} applied here` : 'nothing left here'}): ${site.searches[searchIdx]}`);
         await mainPage.goto(site.searches[searchIdx], { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
       } else {
         // Re-injecting forever in a wedged browser looks like progress but isn't:
@@ -608,6 +715,9 @@ function buildInjection() {
     await new Promise((r) => setTimeout(r, 15000)); // let the profile lock clear before relaunching
   }
 
+  // External jobs found but never reached (run hit its target or time limit) — keep
+  // their links in the CSV too, so they can be applied to by hand.
+  flushExternal('run ended');
   log(`Finished: ${submitted}/${TARGET} applications ${LIVE ? 'submitted' : 'simulated (dry run)'}.`);
   if (site.externalApply) {
     log(`External (company site): ${extStats.applied} applied, ${extStats.skipped} skipped (account required / not a form), ` +

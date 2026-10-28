@@ -44,23 +44,24 @@ const titleOk = (t) => {
 };
 
 for (const title of [
-  'Full stack developer', 'AI Full stack developer', 'Full stack engineer',
-  'software developer', 'software engineer', 'Web developer', 'AI Engineer',
-  'Gen AI engineer', 'Generative AI Engineer', 'Generative AI Developer', 'Gen AI Developer',
-  'Backend engineer', 'Backend developer', 'frontend Engineer', 'frontend Developer',
+  'Backend engineer', 'Backend developer', 'Java Developer', 'Java Backend Developer',
+  'Spring Boot Developer', 'Node.js Developer', 'Python Developer', 'Software Engineer',
+  'software developer', 'SDE 2', 'Full stack developer', 'Full stack engineer',
 ]) {
   assert.ok(titleOk(title), `must apply to: ${title}`);
 }
 
 // and must still skip the ones deliberately blocked
-for (const title of ['QA Engineer', 'DevOps Engineer', 'Engineering Manager', '.NET Developer']) {
+for (const title of ['QA Engineer', 'DevOps Engineer', 'Engineering Manager', '.NET Developer',
+                     'frontend Developer', 'Web developer', 'AI Engineer', 'Gen AI Developer']) {
   assert.ok(!titleOk(title), `must skip: ${title}`);
 }
 
 // Titles that MATCH a keyword and must still be blocked — without these the
 // blocklist is untested, since the cases above never get past the keyword check.
 for (const title of ['Full Stack Team Lead', 'Backend QA Engineer', 'Python Test Engineer',
-                     'Full Stack Developer Intern', 'React Native iOS Developer']) {
+                     'Full Stack Developer Intern', 'React Native iOS Developer',
+                     'Full Stack Frontend Developer', 'Machine Learning Engineer - Python']) {
   assert.ok(!titleOk(title), `keyword matched but blocklist must win: ${title}`);
 }
 
