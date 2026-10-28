@@ -15,6 +15,70 @@ detail lives in `.env` — nothing is hard-coded in the scripts.
 The apply runners start in **DRY RUN** mode — they fill everything but never press
 Send — so you can watch them work before adding `--live`.
 
+## Quick reference (macOS)
+
+Run everything from the repo folder. Windows users can use the same `node` commands.
+For scheduling on Windows, see the Task Scheduler sections below.
+
+**Setup and checks**
+
+| Command | What it does |
+|---|---|
+| `npm install` | Install dependencies (once) |
+| `cp .env.example .env` | Create your config, then fill it in (once) |
+| `node check-setup.js` | Checks the setup and prints pass/fail. Read-only: opens Chrome but changes nothing |
+| `node check-setup.js --quick` | Same checks without opening a browser |
+
+**Profile refresh**
+
+| Command | What it does |
+|---|---|
+| `node naukri-profile-refresh.js login` | One-time Google sign-in in a visible window; approve 2-step verification if asked |
+| `node naukri-profile-refresh.js` | Refresh now. Chrome hides after about 1 second |
+| `node naukri-profile-refresh.js --show` | Refresh with the window left on screen, to watch it or debug |
+| `node naukri-profile-refresh.js --minimize` | Refresh with the window minimised to the Dock |
+| `node naukri-profile-refresh.js --force-cv` | Refresh and re-upload the resume even if it was uploaded today (use after swapping the PDF) |
+| `node naukri-profile-refresh.js --when-away` | Refresh only if the screen is locked or the Mac has been idle 10+ min, at most once an hour. The scheduled job uses this |
+
+**Hourly schedule (launchd)**
+
+| Command | What it does |
+|---|---|
+| `./setup-schedule-mac.sh` | Register the refresh job: checks every 15 min, refreshes only while you're away |
+| `./setup-schedule-mac.sh --all` | Also register the **live** Naukri and Wellfound auto-apply jobs |
+| `./setup-schedule-mac.sh --status` | Show which jobs are registered and their last exit code |
+| `launchctl kickstart gui/$(id -u)/com.naukri-update.profile-refresh` | Trigger the scheduled job now (still applies the away check) |
+| `./setup-schedule-mac.sh --remove` | Remove all scheduled jobs |
+
+**Windows and logs**
+
+| Command | What it does |
+|---|---|
+| `node show-windows.js` | Bring hidden automation Chrome windows back and pause auto-hiding |
+| `node show-windows.js --hide` | Hide them again and resume auto-hiding |
+| `tail -20 launchd-profile-refresh.log` | Scheduled-job output, including `skip: ...` lines |
+| `tail -20 naukri-refresh.log` | History of refreshes that actually ran (`OK:` / `ERROR:`) |
+| `open naukri-refresh-error-*.png` | Screenshot of what the browser saw when a run failed |
+| `rm .last-refresh` | Clear the once-an-hour limit so the next `--when-away` run can refresh |
+
+**Auto-apply**
+
+| Command | What it does |
+|---|---|
+| `node auto-apply-runner.js naukri login` | One-time sign-in (also `wellfound`, `indeed`) |
+| `node auto-apply-runner.js naukri` | Dry run: fills everything, never submits |
+| `node auto-apply-runner.js naukri --live` | Applies for real |
+
+**Settings in `.env`:** `AWAY_IDLE_MINUTES` sets how many idle minutes count as "away"
+(default 10).
+
+**Testing the away check:** run `sleep 20; node naukri-profile-refresh.js --when-away`
+and lock the screen straight away with **Ctrl + Cmd + Q**. After you unlock, the output
+should show `Running while away (screen locked)` followed by an `OK:` line.
+
+**Git remotes:** `origin` is your fork and `upstream` is the original repo. To pull in
+upstream changes, run `git fetch upstream && git merge upstream/main`.
+
 ---
 
 # Part 1 — Naukri profile refresh
@@ -164,6 +228,10 @@ this.
 | `.env.example` | Template — copy to `.env` and fill in |
 | `naukri-refresh.log` | Run history (git-ignored) |
 | `.naukri-chrome-profile/` | Saved Chrome session (git-ignored) |
+| `setup-schedule-mac.sh` | Registers the macOS launchd jobs |
+| `window-utils.js` | Hides, minimises and restores the automation Chrome (Windows and macOS), and runs the away check |
+| `launchd-*.log` | Output of the scheduled macOS jobs (git-ignored) |
+| `.last-refresh` | Time of the last successful refresh; the once-an-hour limit reads it (git-ignored) |
 
 ## Disclaimer
 
