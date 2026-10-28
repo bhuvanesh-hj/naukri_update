@@ -218,7 +218,9 @@ function buildInjection() {
       // before the hide landed. --show and --minimize need a real on-screen origin
       // (Chrome otherwise reuses the old -32000 bounds saved in the profile).
       // show-windows.js moves a hidden window back into view before showing it.
-      SHOW_WINDOW || MINIMIZE_ONLY || LOGIN_MODE
+      // macOS clamps off-screen windows back into view, and hides at the app
+      // level instead (see window-utils.js), so off-screen is Windows-only.
+      SHOW_WINDOW || MINIMIZE_ONLY || LOGIN_MODE || process.platform !== 'win32'
         ? '--window-position=0,0'
         : '--window-position=-32000,-32000',
     ],

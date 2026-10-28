@@ -100,7 +100,108 @@ if ($pids.Count -gt 0) {
 Write-Output $n
 `;
 
+// ---- macOS ----------------------------------------------------------------------
+//
+// There is no per-window "hide" on macOS, so hiding works at the app level: the
+// automation Chrome is its own process (its own --user-data-dir), and System Events
+// can hide exactly that process by pid (the Cmd+H state) without touching a personal
+// Chrome. Minimise and restore go through the AXMinimized attribute of each window.
+//
+// Permissions (asked once, by macOS, the first time it runs):
+//   hide             Automation -> "System Events" for your terminal / node
+//   minimize/restore also Accessibility for your terminal / node
+// Without them osascript errors, and this reports 0 like any other failure.
+
+// Main browser process(es) for a profile: the one with --user-data-dir=<dir> and no
+// --type= (renderer/GPU/utility helpers carry --type= and own no windows).
+function macChromePids(profileDir) {
+  return new Promise((resolve) => {
+    execFile(
+      "ps",
+      ["-axww", "-o", "pid=,command="],
+      { maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout) => {
+        if (err) return resolve([]);
+        const needle = `--user-data-dir=${path.resolve(profileDir)}`;
+        resolve(
+          String(stdout)
+            .split("\n")
+            .filter((l) => l.includes(needle) && !l.includes(" --type="))
+            .map((l) => parseInt(l.trim(), 10))
+            .filter(Boolean),
+        );
+      },
+    );
+  });
+}
+
+// argv: mode pid... — prints how many processes/windows changed. Like the Windows
+// side, a state the target is already in is never re-applied, so the sweep does not
+// fight a window you brought up yourself.
+const MAC_SCRIPT = `
+on run argv
+  set mode to item 1 of argv
+  set n to 0
+  tell application "System Events"
+    repeat with i from 2 to count of argv
+      set wanted to (item i of argv) as integer
+      try
+        set p to first process whose unix id is wanted
+        if mode is "hide" then
+          if visible of p then
+            set visible of p to false
+            set n to n + 1
+          end if
+        else if mode is "minimize" then
+          repeat with w in (windows of p)
+            if value of attribute "AXMinimized" of w is false then
+              set value of attribute "AXMinimized" of w to true
+              set n to n + 1
+            end if
+          end repeat
+        else
+          set changed to false
+          if not visible of p then
+            set visible of p to true
+            set changed to true
+          end if
+          try
+            repeat with w in (windows of p)
+              if value of attribute "AXMinimized" of w then
+                set value of attribute "AXMinimized" of w to false
+                set changed to true
+              end if
+            end repeat
+          end try
+          if changed then
+            set frontmost of p to true
+            set n to n + 1
+          end if
+        end if
+      end try
+    end repeat
+  end tell
+  return n
+end run
+`;
+
+async function runMac(profileDir, mode) {
+  const pids = await macChromePids(profileDir);
+  if (!pids.length) return 0;
+  const lines = MAC_SCRIPT.trim().split("\n");
+  return new Promise((resolve) => {
+    execFile(
+      "osascript",
+      [...lines.flatMap((l) => ["-e", l]), mode, ...pids.map(String)],
+      { timeout: 20000 },
+      (err, stdout) =>
+        resolve(err ? 0 : parseInt(String(stdout).trim(), 10) || 0),
+    );
+  });
+}
+
 function run(profileDir, mode) {
+  if (process.platform === "darwin") return runMac(profileDir, mode);
   if (process.platform !== "win32") return Promise.resolve(0);
   return new Promise((resolve) => {
     execFile(

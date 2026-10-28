@@ -145,7 +145,9 @@ async function googleLogin(ctx, page) {
       // "about:blank - Google Chrome" on every hourly run. --show/--minimize/login
       // need a real on-screen origin instead, and show-windows.js moves a hidden
       // window back into view before showing it.
-      SHOW_WINDOW || MINIMIZE_ONLY || LOGIN_MODE
+      // macOS clamps off-screen windows back into view, and hides at the app
+      // level instead (see window-utils.js), so off-screen is Windows-only.
+      SHOW_WINDOW || MINIMIZE_ONLY || LOGIN_MODE || process.platform !== "win32"
         ? "--window-position=0,0"
         : "--window-position=-32000,-32000",
     ],
@@ -197,7 +199,9 @@ async function googleLogin(ctx, page) {
     await editIcon.first().waitFor({ timeout: 30000 });
     await editIcon.first().click();
 
-    const textarea = page.locator("#resumeHeadlineTxt");
+    // #resumeHeadline is the redesigned modal (Oct 2026, "Improve with AI" bar);
+    // #resumeHeadlineTxt is the older one, kept in case it is still served.
+    const textarea = page.locator("#resumeHeadline, #resumeHeadlineTxt").first();
     await textarea.waitFor({ timeout: 15000 });
     const current = (await textarea.inputValue()).trimEnd();
     const dots = current.length - current.replace(/\.+$/, "").length;

@@ -109,6 +109,35 @@ Enable-ScheduledTask NaukriProfileRefresh         # resume
 Unregister-ScheduledTask NaukriProfileRefresh     # remove
 ```
 
+## Run it hourly on macOS (launchd)
+
+Setup is the same as above (use `cp .env.example .env`). Then register a launchd
+agent, which runs at login and every hour after that:
+
+```bash
+./setup-schedule-mac.sh            # hourly profile refresh
+./setup-schedule-mac.sh --all      # also the LIVE Naukri + Wellfound auto-apply jobs
+./setup-schedule-mac.sh --status   # check
+launchctl kickstart gui/$(id -u)/com.naukri-update.profile-refresh   # run now
+./setup-schedule-mac.sh --remove   # remove all
+```
+
+Output goes to `launchd-<job>.log` in the repo folder.
+
+**Hiding the window on macOS:** a hidden run hides the automation Chrome at the app level
+(like Cmd+H) through System Events. Your personal Chrome is never touched. `--minimize`
+and `node show-windows.js` work the same way as on Windows. On macOS the window shows
+for about a second before it hides. macOS asks once for these permissions, for your
+terminal and, for scheduled runs, for `node`:
+
+- **Automation → System Events**, needed to hide
+- **Accessibility**, needed to minimise and restore
+
+If the repo is under `~/Desktop`, `~/Documents` or `~/Downloads`, a scheduled run also
+needs folder access for `node`. Go to System Settings → Privacy & Security → Files and
+Folders (or Full Disk Access). Moving the repo somewhere like `~/naukri_update` avoids
+this.
+
 ## Troubleshooting
 
 | Symptom | Fix |
