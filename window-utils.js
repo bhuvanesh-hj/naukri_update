@@ -200,6 +200,42 @@ async function runMac(profileDir, mode) {
   });
 }
 
+const execText = (cmd, args) =>
+  new Promise((resolve) =>
+    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) =>
+      resolve(err ? "" : String(stdout)),
+    ),
+  );
+
+/**
+ * Is anyone looking at the screen? Scheduled runs pass --when-away and skip unless
+ * the screen is locked or there has been no keyboard/mouse input for `minIdleMinutes`,
+ * because on macOS the browser cannot be kept from showing for about a second
+ * (off-screen positions are clamped back into view, and headless is blocked).
+ * Chrome keeps working behind a locked screen, so the run still happens.
+ *
+ * Resolves { away, reason }. Off macOS there is no check: always away.
+ */
+async function userAway(minIdleMinutes = 10) {
+  if (process.platform !== "darwin")
+    return { away: true, reason: "presence check is macOS-only" };
+  // CGSSessionScreenIsLocked only appears in the session dict while locked.
+  const root = await execText("ioreg", ["-n", "Root", "-d1", "-a"]);
+  if (/<key>CGSSessionScreenIsLocked<\/key>\s*<true\/>/.test(root))
+    return { away: true, reason: "screen locked" };
+  // HIDIdleTime: nanoseconds since the last keyboard/mouse/trackpad input.
+  const hid = await execText("ioreg", ["-c", "IOHIDSystem", "-d", "4"]);
+  const m = /"HIDIdleTime" = (\d+)/.exec(hid);
+  if (!m) return { away: false, reason: "could not read idle time" };
+  const idleMin = Number(m[1]) / 1e9 / 60;
+  return idleMin >= minIdleMinutes
+    ? { away: true, reason: `idle ${Math.floor(idleMin)} min` }
+    : {
+        away: false,
+        reason: `in use (idle ${Math.round(idleMin * 60)}s < ${minIdleMinutes} min)`,
+      };
+}
+
 function run(profileDir, mode) {
   if (process.platform === "darwin") return runMac(profileDir, mode);
   if (process.platform !== "win32") return Promise.resolve(0);
@@ -227,5 +263,6 @@ module.exports = {
   minimizeBrowserWindows,
   hideBrowserWindows,
   restoreBrowserWindows,
+  userAway,
   SHOW_FLAG,
 };

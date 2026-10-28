@@ -23,11 +23,16 @@ repo="$(cd "$(dirname "$0")" && pwd)"
 agents="$HOME/Library/LaunchAgents"
 domain="gui/$(id -u)"
 
-# label|arguments
-refresh_def="com.naukri-update.profile-refresh|naukri-profile-refresh.js"
+# label|interval seconds|arguments
+#
+# --when-away: a run does nothing unless the screen is locked or the Mac has been idle
+# 10+ minutes (AWAY_IDLE_MINUTES), because Chrome cannot be kept fully off screen on
+# macOS. The refresh checks every 15 minutes so it catches short breaks, and itself
+# refreshes at most once an hour.
+refresh_def="com.naukri-update.profile-refresh|900|naukri-profile-refresh.js --when-away"
 apply_defs=(
-  "com.naukri-update.naukri-apply|auto-apply-runner.js naukri --live --scheduled"
-  "com.naukri-update.wellfound-apply|auto-apply-runner.js wellfound --live --scheduled"
+  "com.naukri-update.naukri-apply|3600|auto-apply-runner.js naukri --live --scheduled --when-away"
+  "com.naukri-update.wellfound-apply|3600|auto-apply-runner.js wellfound --live --scheduled --when-away"
 )
 all_defs=("$refresh_def" "${apply_defs[@]}")
 
@@ -50,7 +55,8 @@ if [ "$mode" = "status" ]; then
     info="$(launchctl print "$domain/$label")"
     state="$(awk -F' = ' '/^\tstate = /{print $2; exit}' <<<"$info")"
     last="$(awk -F' = ' '/^\tlast exit code = /{print $2; exit}' <<<"$info")"
-    printf "%-36s %-12s every=1h last-exit=%s\n" "$label" "${state:-?}" "${last:-never run}"
+    every="$(cut -d'|' -f2 <<<"$d")"
+    printf "%-36s %-12s every=%sm last-exit=%s\n" "$label" "${state:-?}" "$((every / 60))" "${last:-never run}"
   done
   exit 0
 fi
@@ -80,7 +86,8 @@ mkdir -p "$agents"
 ok=0; bad=0
 for d in "${defs[@]}"; do
   label="${d%%|*}"
-  read -r -a args <<<"${d#*|}"
+  interval="$(cut -d'|' -f2 <<<"$d")"
+  read -r -a args <<<"$(cut -d'|' -f3- <<<"$d")"
   plist="$agents/$label.plist"
   log="$repo/launchd-${label#com.naukri-update.}.log"
 
@@ -102,7 +109,7 @@ EOF
   <key>EnvironmentVariables</key>
   <dict><key>PATH</key><string>$(dirname "$node_bin"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
   <key>RunAtLoad</key><true/>
-  <key>StartInterval</key><integer>3600</integer>
+  <key>StartInterval</key><integer>$interval</integer>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>$log</string>
@@ -120,7 +127,7 @@ EOF
 
   # Verify rather than assume (same lesson as setup-schedule.ps1).
   if launchctl print "$domain/$label" >/dev/null 2>&1; then
-    echo "  OK   $label  (every 1h, and at login; log: ${log#$repo/})"; ok=$((ok + 1))
+    echo "  OK   $label  (every $((interval / 60))m when away, and at login; log: ${log#$repo/})"; ok=$((ok + 1))
   else
     echo "  FAIL $label  (bootstrap reported no error but the job is not loaded)"; bad=$((bad + 1))
   fi

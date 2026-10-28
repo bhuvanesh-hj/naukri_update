@@ -15,11 +15,17 @@
 const { chromium } = require("playwright-core");
 const path = require("path");
 const fs = require("fs");
-const { CREDS, naukriProfileUrl, resumePath } = require("./config"); // credentials + profile URL come from .env, never hard-coded
+const {
+  CREDS,
+  naukriProfileUrl,
+  resumePath,
+  awayIdleMinutes: AWAY_IDLE_MINUTES,
+} = require("./config"); // credentials + profile URL come from .env, never hard-coded
 const { nextHeadline, uploadedToday } = require("./naukri-helpers");
 const {
   minimizeBrowserWindows,
   hideBrowserWindows,
+  userAway,
   SHOW_FLAG,
 } = require("./window-utils");
 
@@ -38,6 +44,13 @@ const FORCE_CV = process.argv.includes("--force-cv");
 // the taskbar, --show leaves it on screen. `node show-windows.js refresh` brings it back.
 const SHOW_WINDOW = process.argv.includes("--show");
 const MINIMIZE_ONLY = process.argv.includes("--minimize");
+// Scheduled macOS runs (setup-schedule-mac.sh) pass --when-away: skip unless the
+// screen is locked or the Mac has been idle AWAY_IDLE_MINUTES (default 10), and at
+// most one refresh per MIN_GAP, so a 15-minute check catches short breaks without
+// refreshing four times an hour.
+const WHEN_AWAY = process.argv.includes("--when-away");
+const LAST_OK_FILE = path.join(__dirname, ".last-refresh");
+const MIN_GAP_MS = 55 * 60 * 1000;
 
 const log = (msg) => {
   const line = `[${new Date().toLocaleString()}] ${msg}`;
@@ -132,6 +145,24 @@ async function googleLogin(ctx, page) {
 }
 
 (async () => {
+  if (WHEN_AWAY && !LOGIN_MODE) {
+    let last = 0;
+    try {
+      last = Number(fs.readFileSync(LAST_OK_FILE, "utf8")) || 0;
+    } catch (e) {}
+    // Quiet skips go to stdout only (the launchd log), not naukri-refresh.log,
+    // which would otherwise fill with a line every 15 minutes.
+    if (Date.now() - last < MIN_GAP_MS) {
+      console.log(`[${new Date().toLocaleString()}] skip: refreshed under an hour ago`);
+      return;
+    }
+    const { away, reason } = await userAway(AWAY_IDLE_MINUTES);
+    if (!away) {
+      console.log(`[${new Date().toLocaleString()}] skip: ${reason}`);
+      return;
+    }
+    log(`Running while away (${reason}).`);
+  }
   const ctx = await chromium.launchPersistentContext(PROFILE_DIR, {
     channel: "chrome",
     headless: false, // naukri's Akamai bot-check blocks headless; minimised headed instead
@@ -291,6 +322,9 @@ async function googleLogin(ctx, page) {
     log(
       `OK: headline ${dotMsg} (verified), ${cvMsg} → "${updated.slice(0, 60)}"`,
     );
+    try {
+      fs.writeFileSync(LAST_OK_FILE, String(Date.now()));
+    } catch (e) {}
   } catch (err) {
     const pages = ctx.pages();
     for (let i = 0; i < pages.length; i++) {

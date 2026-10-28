@@ -14,8 +14,8 @@
  */
 const path = require('path');
 const fs = require('fs');
-const { CV, geminiKey, resumePath: RESUME_PATH } = require('./config'); // personal data from .env
-const { minimizeBrowserWindows, hideBrowserWindows, SHOW_FLAG } = require('./window-utils');
+const { CV, geminiKey, resumePath: RESUME_PATH, awayIdleMinutes: AWAY_IDLE_MINUTES } = require('./config'); // personal data from .env
+const { minimizeBrowserWindows, hideBrowserWindows, userAway, SHOW_FLAG } = require('./window-utils');
 const { applyExternal } = require('./external-apply'); // "Apply on company site" jobs, driven from Node
 // stealth patches the fingerprint leaks reCAPTCHA uses to flag automation; falls back to plain playwright
 let chromium;
@@ -47,6 +47,9 @@ const ACTIVE_UNTIL = 23; // 23:00 (exclusive)
 // `node show-windows.js` brings a hidden window back.
 const SHOW_WINDOW = process.argv.includes('--show');
 const MINIMIZE_ONLY = process.argv.includes('--minimize');
+// macOS scheduled runs pass --when-away: skip unless the screen is locked or the Mac
+// has been idle AWAY_IDLE_MINUTES (default 10), since the browser shows for ~1s there.
+const WHEN_AWAY = process.argv.includes('--when-away');
 
 const SITES = {
   indeed: {
@@ -199,6 +202,14 @@ function buildInjection() {
     const jitterMs = Math.floor(Math.random() * 14 * 60 * 1000);
     log(`Scheduled run: waiting ${Math.round(jitterMs / 60000)} min before starting.`);
     await new Promise((r) => setTimeout(r, jitterMs));
+  }
+  // Checked after the jitter wait, so it reflects the moment the browser would open.
+  if (WHEN_AWAY && !LOGIN_MODE) {
+    const { away, reason } = await userAway(AWAY_IDLE_MINUTES);
+    if (!away) {
+      log(`Skipping this run: Mac ${reason}.`);
+      return;
+    }
   }
   if (!LOGIN_MODE && TARGET <= 0) {
     log(`Daily cap of ${DAILY_CAP} applications already reached (${dayState.count} today) — exiting.`);

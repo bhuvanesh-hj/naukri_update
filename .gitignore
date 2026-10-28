@@ -26,3 +26,6 @@ node_modules/
 
 # runtime flag: pauses automatic window hiding (created by show-windows.js)
 .show-windows
+
+# last successful refresh time (used by --when-away to refresh at most hourly)
+.last-refresh

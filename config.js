@@ -65,4 +65,7 @@ const naukriProfileUrl = g('NAUKRI_PROFILE_URL', 'https://www.naukri.com/mnjuser
 // Relative names resolve against the repo folder; an absolute path is used as-is.
 const resumePath = path.resolve(__dirname, g('RESUME_FILE', 'Ankit Baghel.pdf'));
 
-module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, resumePath };
+// --when-away: minutes without keyboard/mouse input before a scheduled run proceeds
+const awayIdleMinutes = Number(g('AWAY_IDLE_MINUTES')) || 10;
+
+module.exports = { CV, CREDS, geminiKey, naukriProfileUrl, resumePath, awayIdleMinutes };

@@ -124,6 +124,14 @@ launchctl kickstart gui/$(id -u)/com.naukri-update.profile-refresh   # run now
 
 Output goes to `launchd-<job>.log` in the repo folder.
 
+**Only while you're away.** Chrome can't be kept fully off screen on macOS, so the
+scheduled jobs pass `--when-away`. A run does nothing unless your screen is locked or
+the Mac has had no keyboard or mouse input for 10 minutes (set `AWAY_IDLE_MINUTES` in
+`.env` to change this). The refresh checks every 15 minutes, so it catches meetings and
+lunch breaks, and it refreshes at most once an hour. Skips show up as
+`skip: in use (...)` in the launchd log. Manual runs ignore the check unless you pass
+`--when-away` yourself.
+
 **Hiding the window on macOS:** a hidden run hides the automation Chrome at the app level
 (like Cmd+H) through System Events. Your personal Chrome is never touched. `--minimize`
 and `node show-windows.js` work the same way as on Windows. On macOS the window shows
