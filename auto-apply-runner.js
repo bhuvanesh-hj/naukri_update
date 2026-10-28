@@ -185,9 +185,10 @@ const log = (msg) => console.log(`[${new Date().toLocaleString()}] [${SITE_ARG}]
 
 // ======== CSV log of every submitted application (created once, appended forever) ========
 const CSV_FILE = path.join(__dirname, 'applications.csv');
-const SKILLS = ['JavaScript', 'TypeScript', 'Python', 'Java', 'React', 'Next.js', 'React Native', 'Node.js',
-  'Express', 'FastAPI', 'MongoDB', 'PostgreSQL', 'Redis', 'GraphQL', 'WebSockets', 'Docker', 'Kubernetes',
-  'GCP', 'AWS', 'CI/CD', 'LangChain', 'LangGraph', 'RAG', 'LLM', 'GenAI', 'Machine Learning', 'MCP', 'Pinecone', 'FAISS'];
+// Skills column: which of these the job title/description mentions. Matches the resume.
+const SKILLS = ['Java', 'Spring Boot', 'Spring', 'J2EE', 'Vert.x', 'Microservices', 'Kafka', 'Node.js', 'NestJS',
+  'Express', 'TypeScript', 'JavaScript', 'Python', 'FastAPI', 'SQL', 'PostgreSQL', 'MySQL', 'MongoDB', 'Redis',
+  'Airflow', 'Docker', 'CI/CD', 'REST', 'React', 'Next.js', 'Redux', 'AWS', 'Kubernetes'];
 const matchSkills = (t) => { const l = t.toLowerCase(); return SKILLS.filter((s) => l.includes(s.toLowerCase())).join('; '); };
 const csvRow = (vals) => vals.map((v) => '"' + String(v || '').replace(/"/g, '""').replace(/\s+/g, ' ').trim() + '"').join(',') + '\n';
 function logApplication(job) {
@@ -223,8 +224,9 @@ function logExternal(job, status) {
     // saves the file after you fill in My Status.
     const esc = job.href.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     if (fs.existsSync(CSV_FILE) && new RegExp(`(^|,)"?${esc}"?(,|\\r?$)`, 'm').test(fs.readFileSync(CSV_FILE, 'utf8'))) return;
-    logApplication({ title: job.title, company: '', salary: '', skills: matchSkills(job.title),
-      link: job.href, companyUrl: job.companyUrl, verified: status, jd: 'external (company site)' });
+    logApplication({ title: job.title, company: job.company || '', salary: job.salary || '',
+      skills: job.skills || matchSkills(job.title), link: job.href, companyUrl: job.companyUrl, verified: status,
+      jd: ['external (company site)', job.jd].filter(Boolean).join(' · ') });
   } catch (e) { log('CSV write failed: ' + e.message); }
 }
 
@@ -365,6 +367,7 @@ function buildInjection(yieldAfter = 0) {
   // the feed, so without this the supervisor would inject the apply script into them.
   const VERIFY_PAGES = new Set();
   const externalSeen = new Set();
+  const cardDetails = new Map(); // job href → company/salary/skills from its search card
   const extStats = { applied: 0, skipped: 0, failed: 0 };
 
   const isBusy = (p) => p.evaluate('!!window.__aaBusy').catch(() => false);
@@ -467,6 +470,23 @@ function buildInjection(yieldAfter = 0) {
       if (!/auto-apply/.test(text)) return;
       lastActivity = Date.now();
       const clean = text.replace(/%c\[auto-apply\]\s*\S*/, '').trim();
+
+      // "📋 JOB {json}" — the card's details (company, salary, ...) for the CSV row.
+      // Logged right after "▶ Applying", so it fills in the job that line started.
+      const jm = clean.match(/📋 JOB (\{.*\})\s*$/);
+      if (jm) {
+        try {
+          const d = JSON.parse(jm[1]);
+          const info = {
+            title: d.title, link: d.href, company: d.company || '', salary: d.salary || '',
+            skills: [...new Set([...(d.tags || []), ...matchSkills(d.title + ' ' + (d.tags || []).join(' ')).split('; ').filter(Boolean)])].join('; '),
+            jd: [d.experience && `Exp ${d.experience}`, d.location, d.posted && `posted ${d.posted}`].filter(Boolean).join(' · '),
+          };
+          cardDetails.set(d.href, info);
+          if (pendingJob) Object.assign(pendingJob, info);
+        } catch (e) {}
+        return; // data line, not worth echoing
+      }
       log('  ' + clean.slice(0, 160));
 
       // snapshot the wizard whenever it can't proceed, so the blocking field is visible
@@ -503,8 +523,9 @@ function buildInjection(yieldAfter = 0) {
             if (!d || !pendingJob) return;
             pendingJob.company = pendingJob.company || d.company;
             pendingJob.salary = pendingJob.salary || d.salary;
-            pendingJob.jd = d.jd;
-            pendingJob.skills = matchSkills(pendingJob.title + ' ' + d.jd);
+            // fill only what the card didn't give (naukri's 📋 JOB line sets these first)
+            pendingJob.jd = pendingJob.jd || d.jd;
+            pendingJob.skills = pendingJob.skills || matchSkills(pendingJob.title + ' ' + d.jd);
           }).catch(() => {});
         }, SITE_ARG === 'indeed' ? 6000 : 2000); // indeed pane loads slower; wellfound modal closes fast
       }
@@ -514,7 +535,9 @@ function buildInjection(yieldAfter = 0) {
       const ext = clean.match(/🔗 EXTERNAL \| (.+) \| (\S+)/);
       if (ext && !externalSeen.has(ext[2])) {
         externalSeen.add(ext[2]);
-        externalQueue.push({ title: ext[1].trim(), href: ext[2].trim() });
+        const d = cardDetails.get(ext[2].trim()) || {};
+        externalQueue.push({ title: d.title || ext[1].trim(), href: ext[2].trim(), company: d.company || '',
+          salary: d.salary || '', skills: d.skills || '', jd: d.jd || '' });
       }
 
       if (site.submittedRe.test(text)) {
@@ -527,10 +550,13 @@ function buildInjection(yieldAfter = 0) {
           // Verify against the site's own applied-list before writing the CSV row, so
           // the CSV records what actually registered rather than what we hoped did.
           verifyInAppliedList(job, page.context()).then((v) => {
+            // no applied-list page configured (naukri): nothing to check against, so say
+            // what happened rather than "unknown"
+            if (!site.appliedListUrl) v = 'one-click applied';
             job.verified = v;
             if (v === 'verified') log(`  ✔ verified — job is in ${SITE_ARG}'s applied list`);
             else if (v === 'missing') log(`  ❌ NOT in ${SITE_ARG}'s applied list — the submission did not register`);
-            else log('  ? verification unavailable — CSV row marked unverified');
+            else if (v !== 'one-click applied') log('  ? verification unavailable — CSV row marked unverified');
             try { logApplication(job); } catch (e) { log('CSV write failed: ' + e.message); }
           });
         }

@@ -75,6 +75,15 @@ For scheduling on Windows, see the Task Scheduler sections below.
 | `rm apply-state-naukri.json` | Reset today's application count |
 | `open applications.csv` | Everything submitted, plus every "Apply on company site" job and its link |
 
+**Daily checks**
+
+```bash
+tail -5 launchd-naukri-apply.log        # what today's scheduled apply runs did
+tail -3 naukri-refresh.log              # last profile refreshes
+node auto-apply-runner.js naukri --plan # today's count, and which search runs next (→)
+./setup-schedule-mac.sh --status        # are both scheduled jobs registered?
+```
+
 **Settings in `.env`:**
 
 | Setting | Default | What it does |
@@ -90,10 +99,12 @@ For scheduling on Windows, see the Task Scheduler sections below.
 | `RELOCATE_OK` | `yes` | `no` picks the "No" option on Yes/No relocation questions about other cities (Bengaluru ones still get Yes) |
 
 **`applications.csv`** gets a row for each job a live run handles, with the date and
-time:
+time. For Naukri jobs, Company, CTC/Salary (when the listing shows one) and Skills come
+from the job's search card. Job Description holds its experience range, location and
+posting date, for example `Exp 3-6 Yrs · Bengaluru · posted Today`.
 
-- **Naukri one-click applies:** Verified is `verified`, `missing` or `unknown`, checked
-  against your Naukri applied list.
+- **Naukri one-click applies:** Verified is `one-click applied`. (On Wellfound it's
+  `verified`, `missing` or `unknown`, checked against Wellfound's applied list.)
 - **"Apply on company site" jobs:** Job Link is the Naukri listing and Company Site Link
   is the employer page it led to. Verified says what happened: `external: applied`,
   `external: skipped — needs an account … — apply manually`, or `external: not attempted
@@ -102,9 +113,18 @@ time:
 - **My Status** is left blank for you to fill in, for example "applied" or "not
   interested".
 
-Each Naukri listing is written only once, even if it turns up again in a later search
-or on a later day. Stopping a live run with Ctrl+C still saves the external jobs it had
-found but not reached yet. Dry runs write nothing to the CSV.
+**When rows are written:** one at a time, while the run is going, not all at the end.
+
+- A Naukri one-click apply is written straight after it's submitted. On Wellfound it's
+  written 10–40 seconds later, after the applied-list check.
+- A company-site job is written as soon as the run has tried it (applied, skipped or
+  failed).
+- Company-site jobs found but not reached yet are written when the run ends, or straight
+  away if you stop it with Ctrl+C.
+
+So `applications.csv` is always up to date to within a minute or so. Each Naukri listing
+is written only once, even if it turns up again in a later search or on a later day. Dry
+runs write nothing to the CSV.
 
 **Working through the CSV by hand:** open it in Excel, filter Verified for "apply
 manually", apply, and set My Status. Save it as **CSV UTF-8**, and only while no apply

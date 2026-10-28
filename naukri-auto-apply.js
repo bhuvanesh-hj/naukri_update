@@ -449,6 +449,19 @@
     state[SEEN_KEY].push(job.href);
     saveState();
     log(`▶ Applying: ${job.title} | ${job.href}`);
+    // Card details for the runner's CSV row, as one JSON line: the title alone can
+    // contain " | " (e.g. "Java Developer | Spring Boot"), so it can't be split reliably.
+    const cardText = (sel) => (job.card.querySelector(sel)?.textContent || '').replace(/\s+/g, ' ').trim();
+    log('📋 JOB ' + JSON.stringify({
+      href: job.href,
+      title: job.title,
+      company: cardText('a.comp-name, .comp-name'),
+      salary: cardText('.sal-wrap span, .sal span, [class*="salary" i]'),
+      experience: cardText('.expwdth, .exp-wrap span'),
+      location: cardText('.locWdth, .loc-wrap span'),
+      posted: cardText('.job-post-day'),
+      tags: [...job.card.querySelectorAll('li.tag-li')].map((li) => li.textContent.trim()).filter(Boolean),
+    }));
     job.card.scrollIntoView({ block: 'center' });
 
     const ok = await applyInPopup(popup, job);
